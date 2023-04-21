@@ -22,50 +22,39 @@ def set_database(db_name):
 def create_zips(curr, conn): 
     curr.execute("CREATE TABLE IF NOT EXISTS zipcodes (zipcode_id INTEGER PRIMARY KEY, zipcode INTEGER)")
     conn.commit()
-def zip_table(curr, conn, add):
-   start = 0 + add
-   limit = 25 + add
-    # fetch zipcodes from API 1
-   libraries = requests.get("https://services.arcgis.com/RmCCgQtiZLDCtblq/arcgis/rest/services/Public_Library_Facilities/FeatureServer/0/query?where=1%3D1&outFields=*&outSR=4326&f=json")
-   zipcodesl = libraries.json()
-   l_lst = []
-   for item in zipcodesl["features"]: 
-        zipcode = item["attributes"]["Zip_Code"]
-        l_lst.append(zipcode)
 
-    # fetch zipcodes from API 2
-   parks = requests.get("https://maps.lacity.org/lahub/rest/services/Recreation_and_Parks_Department/MapServer/4/query?outFields=*&where=1%3D1&f=geojson")
-   zipcodesp = parks.json()
-   #print(zipcodesp)
-   p_lst = []
-   for item in zipcodesp["features"]: 
+def zip_table(curr, conn):
+    # fetch zipcodes from API 1
+    """libraries = requests.get("https://services.arcgis.com/RmCCgQtiZLDCtblq/arcgis/rest/services/Public_Library_Facilities/FeatureServer/0/query?where=1%3D1&outFields=*&outSR=4326&f=json")
+    zipcodesl = libraries.json()
+    l_lst = []
+    for item in zipcodesl["features"]: 
+        zipcode = item["attributes"]["Zip_Code"]
+        l_lst.append(zipcode)"""
+    # fetch zipcodes from API 2: parks 
+    parks = requests.get("https://maps.lacity.org/lahub/rest/services/Recreation_and_Parks_Department/MapServer/4/query?outFields=*&where=1%3D1&f=geojson")
+    zipcodesp = parks.json()
+    p_lst = []
+    for item in zipcodesp["features"]: 
         zipcode = item["properties"]["ZIP"]
         p_lst.append(zipcode)
-
-
-    # combine the zipcodes from both APIs into a single list
-   for zip in p_lst: 
-        l_lst.append(p_lst)
-
     # create a dictionary to keep track of existing zipcodes and their ids
-   zip_dict = {}
-
+    zip_dict = {}
     # add each unique zipcode to the zipcodes table
-   for zipcode in l_lst[start:limit]:
-      if zipcode in zip_dict:
+    for zipcode in p_lst:
+        if zipcode in zip_dict:
             # zipcode already exists, retrieve its id
-        zipcode_id = zip_dict[zipcode]
-   else:
+            zipcode_id = zip_dict[zipcode]
+        else:
             # zipcode is new, assign a new id and add to dictionary
-        zipcode_id = len(zip_dict) + 1
-        zip_dict[zipcode] = zipcode_id
-
-        # insert the zipcode and its id into the zipcodes table
+            zipcode_id = len(zip_dict) + 1
+            zip_dict[zipcode] = zipcode_id
+            # insert the zipcode and its id into the zipcodes table
         curr.execute("INSERT OR IGNORE INTO zipcodes (zipcode_id, zipcode) VALUES (?,?)", (zipcode_id, zipcode))
-    
+    #print(zip_dict)
     # commit changes to the database and close the connection
-   conn.commit()
-   conn.close()
+    conn.commit()
+
 #Function 2: creates empty park table 
 def create_table(curr, conn): 
     curr.execute("CREATE TABLE IF NOT EXISTS parks (park_id INTEGER PRIMARY KEY, park_name TEXT, zipcode_id INTEGER, park_type TEXT, amenities TEXT, FOREIGN KEY (zipcode_id) REFERENCES zipcodes(zipcode_id))")
@@ -85,6 +74,7 @@ def update_table(curr, conn, add):
         amenities = item["properties"]["DESCRIP"]
         # get the corresponding zipcode_id from the 'zipcodes' table
         zip_id = int(curr.execute("SELECT zipcode_id FROM zipcodes WHERE CAST(zipcode AS INTEGER) = ?", (zipcode,)).fetchone()[0])
+        print(zip_id)
         #print(zip_id)
         # insert the park record into the 'parks' table
         curr.execute("INSERT OR IGNORE INTO parks (park_id, park_name, zipcode_id, park_type, amenities) VALUES (?, ?, ?, ?, ?)", (park_id, park_name, zip_id, park_type, amenities))
@@ -92,7 +82,7 @@ def update_table(curr, conn, add):
 
 #Function 4: creates the empty library table 
 def library_table(curr, conn):
-   curr.execute("CREATE TABLE IF NOT EXISTS library (library_id INTEGER PRIMARY KEY, libraryname TEXT,  zip_id INTEGER)")
+   curr.execute("CREATE TABLE IF NOT EXISTS library (library_id INTEGER PRIMARY KEY, libraryname TEXT,  zipcode INTEGER)")
    conn.commit()
    #created the library table but have not filled it yet
 
@@ -108,23 +98,62 @@ def fill_library(curr, conn, add):
        #print(library_id)
        library_name = item["attributes"]["Library_Name"]
        zipcode = item["attributes"]["Zip_Code"]
-       zip_id = int(curr.execute("SELECT zipcode_id FROM zipcodes WHERE CAST(zipcode AS INTEGER) = ?", (zipcode,)).fetchone()[0])
-       curr.execute("""INSERT OR IGNORE INTO library (library_id, libraryname, zip_id) VALUES (?, ?, ?)""", (library_id, library_name, zip_id))
+       #zip_id = int(curr.execute("SELECT zipcode_id FROM zipcodes WHERE CAST(zipcode AS INTEGER) = ?", (zipcode,)).fetchone()[0])
+       curr.execute("""INSERT OR IGNORE INTO library (library_id, libraryname, zipcode) VALUES (?, ?, ?)""", (library_id, library_name, zipcode))
    conn.commit()
     
 #create a statement to join the tables where the zipcodes are equal  
-def join_tables(db): 
-    conn = sqlite3.connect(db)
+def join_tables(db, curr, conn): 
+    curr.execute("""SELECT zipcodes.zipcode_id, COUNT(parks.park_id), COUNT(libraries.library_id) FROM zipcodes LEFT JOIN parks ON zipcodes.zipcode_id = parks.zipcode_id LEFT JOIN libraries ON zipcodes.zipcode_id = libraries.zipcode_id GROUP BY zipcodes.zipcode_id""")
+# Fetch the results and create a new table with the counts
+    counts = curr.fetchall()
+    curr.execute("CREATE TABLE IF NOT EXISTS zipcode_counts (zipcode_id INTEGER PRIMARY KEY, park_count INTEGER, library_count INTEGER)")
+    for row in counts:
+        curr.execute("INSERT INTO zipcode_counts (zipcode_id, park_count, library_count) VALUES (?, ?, ?)", row) 
+# commit changes to the database and close the connection
+    conn.commit()
+def join_vis(db): 
+    conn = sqlite3.connect('db')
     curr = conn.cursor()
-    curr.execute("""
-        SELECT p.zipcode_id, COUNT(DISTINCT p.park_id) AS num_parks, COUNT(DISTINCT l.library_id) AS num_libraries
-        FROM parks_table p
-        JOIN libraries_table l ON p.zipcode_id = l.zipcode_id
-        GROUP BY p.zipcode_id;
-    """)
-    results = curr.fetchall()
-    return results
-    #calculate something and do a visualisation
+
+    curr.execute("""SELECT zipcodes.zipcode, zipcode_counts.park_count, zipcode_counts.library_count FROM zipcodes JOIN zipcode_counts ON zipcodes.zipcode_id = zipcode_counts.zipcode_id ORDER BY zipcode_counts.park_count DESC, zipcode_counts.library_count DESC LIMIT 10""")
+    data = curr.fetchall()
+
+# Extract the data into separate lists for parks and libraries
+    zipcodes = [row[0] for row in data]
+    park_counts = [row[1] for row in data]
+    library_counts = [row[2] for row in data]
+
+# Create a horizontal bar chart with the top 10 zipcodes
+    plt.barh(zipcodes, park_counts, label='Park Count')
+    plt.barh(zipcodes, library_counts, label='Library Count')
+    plt.legend()
+    plt.xlabel('Count')
+    plt.ylabel('Zipcode')
+    plt.title('Top 10 Zipcodes with Most Parks and Libraries')
+    plt.show()
+#This will create a horizontal bar chart with the top 10 zipcodes with the most parks and libraries, where each zipcode is represented by a horizontal bar with two colors, one for the park count and one for the library count. The zipcodes, park_counts, and library_counts lists are extracted from the query results, and used to create the bar chart using the plt.barh() function. The plt.legend(), plt.xlabel(), plt.ylabel(), and plt.title() functions are used to add labels and a title to the chart. Finally, the plt.show() function is used to display the chart.
+
+def count_graph(parksdb):
+   conn = sqlite3.connect('parksdb')
+   curr = conn.cursor()
+
+# read the data from parks table into df
+   parksdf = pd.read_sql_query("SELECT * from parks", conn)
+# read the data from library table into a df
+   librarydf = pd.read_sql_query("SELECT * from library", conn)
+# create a joined df with the park and library table based on the column = zip
+   joindf = pd.merge(parksdf, librarydf, on='zip')
+
+# making a bar chart
+   count_df = joindf.groupby('zip').count() #grup by the zip
+   count_df[['park_name', 'library_name']].plot(kind='bar', figsize=(10,5))
+   plt.title('Number of Parks and Libraries per Zip Code')
+   plt.xlabel('Zip Code')
+   plt.ylabel('Count')
+   plt.show()
+
+
 
 def count_type(parksdb): 
     #I want to calculate the percent of parks that that are each type, then I can create a pie chart with that 
@@ -187,16 +216,16 @@ def amen_cloud(parksdb):
     plt.show()
 
     # Close the database connection
-    conn.close()
 
 def main():
-    curr,conn = set_database("final.db")
+    curr,conn = set_database("parks.db")
     create_zips(curr, conn)
     curr.execute('SELECT COUNT ("zipcode_id") FROM zipcodes')
     conn.commit() 
     zips = curr.fetchall()
     count = zips[0][0]
-    if count < 25: 
+    zip_table(curr, conn)
+    """if count < 25: 
         zip_table(curr, conn, 0)
     elif 25 <= count < 50: 
         zip_table(curr, conn, 25)
@@ -207,7 +236,7 @@ def main():
     elif 100 <= count < 125: 
         zip_table(curr, conn, 100)
     elif 125 <= count <150: 
-        zip_table(curr, conn, 125)
+        zip_table(curr, conn, 125)"""
 
     create_table(curr, conn)
     curr.execute('SELECT COUNT("park_id") FROM parks')
@@ -255,6 +284,10 @@ def main():
     write_type("typefile", typedct)
 #call the amentities function 
     amen_cloud("parks.db")
+    #call count graph 
+    count_graph("parks.db")
+    join_tables("parks.db", curr, conn)
+    join_vis("parks.db")
 
 if __name__ == "__main__":
     main()
