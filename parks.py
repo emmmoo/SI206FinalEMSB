@@ -112,7 +112,8 @@ def join_vis(db):
     zipcodes = [result[0] for result in results]
     total_counts = [result[1] for result in results]
 # Create bar chart
-    plt.bar(zipcodes, total_counts)
+    plt.bar(zipcodes, total_counts, width = 0.9)
+    plt.xticks(zipcodes, rotation=90)
     plt.title('Top 10 Zipcodes by Total Parks and Libraries')
     plt.xlabel('Zipcode')
     plt.ylabel('Total Parks and Libraries')
