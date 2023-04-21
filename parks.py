@@ -20,40 +20,45 @@ def set_database(db_name):
     return curr, conn
 #This function creates a table with zipcodes from the library api and gives them an id 
 def lzip_table(curr, conn): 
+    zip_dict = {}  # use a dictionary to keep track of existing zipcodes and their ids
     curr.execute("CREATE TABLE IF NOT EXISTS zipcodes (zipcode_id INTEGER PRIMARY KEY, zipcode INTEGER)")
     conn.commit()
-    zip_lst = []
     #fill the table with the zipcode
     library_response = requests.get("https://services.arcgis.com/RmCCgQtiZLDCtblq/arcgis/rest/services/Public_Library_Facilities/FeatureServer/0/query?where=1%3D1&outFields=*&outSR=4326&f=json")
     items = library_response.json()
     for item in items["features"]: 
         zipcode = item["attributes"]["Zip_Code"]
-        zip_lst.append(zipcode)
-    for i, zipcode in enumerate(zip_lst): 
-        zipcode_id = str(i + 1).zfill(2)
+        if zipcode in zip_dict: # zipcode already exists, retrieve its id
+            zipcode_id = zip_dict[zipcode]
+        else: # zipcode is new, assign a new id and add to dictionary
+            zipcode_id = len(zip_dict) + 1
+            zip_dict[zipcode] = zipcode_id
         curr.execute("INSERT OR IGNORE INTO zipcodes (zipcode_id, zipcode) VALUES (?,?)", (zipcode_id, zipcode))
     conn.commit()
+    #print(zip_dict)
 #This function creates a table with zipcodes from the parks api and gives them an id 
 def pzip_table(curr, conn): 
+    pzip_dct = {}
     curr.execute("CREATE TABLE IF NOT EXISTS pzipcodes (zipcode_id INTEGER PRIMARY KEY, zipcode INTEGER)")
     conn.commit()
-    pzip_lst = []
     #fill the table with the zipcode
     park_response = requests.get("https://maps.lacity.org/lahub/rest/services/Recreation_and_Parks_Department/MapServer/4/query?outFields=*&where=1%3D1&f=geojson")
     items = park_response.json()
     for item in items["features"]: 
-        zipcodes = item["properties"]["ZIP"]
-        pzip_lst.append(zipcodes)
-    for i, zip in enumerate(pzip_lst): 
-        zipcode_id = str(i + 1).zfill(2)
-        curr.execute("INSERT OR IGNORE INTO pzipcodes (zipcode_id, zipcode) VALUES (?,?)", (zipcode_id, zip))
+        zipcode = item["properties"]["ZIP"]
+        if zipcode in pzip_dct: 
+            zipcode_id = pzip_dct[zipcode]
+        else:
+            zipcode_id = len(pzip_dct) + 1
+            pzip_dct[zipcode] = zipcode_id
+        curr.execute("INSERT OR IGNORE INTO pzipcodes (zipcode_id, zipcode) VALUES (?,?)", (zipcode_id, zipcode))
     conn.commit()
 #Function 2: creates empty park table 
 def create_table(curr, conn): 
     #curr.execute("CREATE TABLE IF NOT EXISTS park_table (id INTEGER PRIMARY KEY, parkname TEXT, zipcode INTEGER, type TEXT, amentities TEXT)")
-    curr.execute("CREATE TABLE IF NOT EXISTS parks (park_id INTEGER PRIMARY KEY, park_name TEXT, zipcode_id INTEGER, park_type TEXT, amenities TEXT,FOREIGN KEY (zipcode_id) REFERENCES zipcodes(zipcode_id))")
+    curr.execute("CREATE TABLE IF NOT EXISTS parks (park_id INTEGER PRIMARY KEY, park_name TEXT, zipcode_id INTEGER, park_type TEXT, amenities TEXT, FOREIGN KEY (zipcode_id) REFERENCES zipcodes(zipcode_id))")
 #Function 3: calls api and extracts info, adds to the table 25 items at a time 
-"""def update_table(curr, conn, add): 
+def update_table(curr, conn, add): 
     start = 0 + add 
     limit = 25 + add
     park_response = requests.get( "https://maps.lacity.org/lahub/rest/services/Recreation_and_Parks_Department/MapServer/4/query?outFields=*&where=1%3D1&f=geojson")
@@ -66,11 +71,11 @@ def create_table(curr, conn):
         park_type = item["properties"]["CATEGORY"]
         amenities = item["properties"]["DESCRIP"]
         # get the corresponding zipcode_id from the 'zipcodes' table
-        zip_id = curr.execute("SELECT zipcode_id FROM pzipcodes WHERE CAST(zipcode AS INTEGER) = ?", (zipcode,)).fetchone()
+        zip_id = int(curr.execute("SELECT zipcode_id FROM pzipcodes WHERE CAST(zipcode AS INTEGER) = ?", (zipcode,)).fetchone()[0])
         #print(zip_id)
         # insert the park record into the 'parks' table
         curr.execute("INSERT OR IGNORE INTO parks (park_id, park_name, zipcode_id, park_type, amenities) VALUES (?, ?, ?, ?, ?)", (park_id, park_name, zip_id, park_type, amenities))
-    conn.commit() """
+    conn.commit() 
 
 #Function 4: creates the empty library table 
 def library_table(curr, conn):
@@ -94,6 +99,10 @@ def fill_library(curr, conn, add):
    conn.commit()
     
 #create a statement to join the tables where the zipcodes are equal  
+def join_tables(db): 
+    conn = sqlite3.connect(db)
+    curr = conn.cursor()
+    join_query = "SELECT park_name, zip FROM PARKS, library_name,"
 # maybe I also need to create a table that for each zip code has the number of parks and libraries, that would be good to turn into a visualisation as well 
 def sum_parks(parks): 
     #calauclate the total amounts of park in each zip code
@@ -187,30 +196,27 @@ def type_graph(count_dct):
 #creates a word cloud with the amentity names 
 def amen_cloud(parksdb): 
     conn = sqlite3.connect(parksdb)
-    
+    curr = conn.cursor()
     # Retrieve all data from all tables in the database
-    tables = pd.read_sql_query("SELECT amenities FROM parks", conn)
-    dfs = []
-    for table in tables:
-        df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
-        dfs.append(df)
-    df = pd.concat(dfs, ignore_index=True)
-    
-    # Combine all the words from all columns into a single string
-    words = ' '.join(df.apply(lambda row: ' '.join(map(str, row)), axis=1))
-    
-    # Generate a word cloud using the wordcloud library
-    wordcloud = WordCloud(width = 800, height = 800, 
-                background_color ='blue', 
-                min_font_size = 10).generate(words)
-    
-    # Display the word cloud using matplotlib
-    plt.figure(figsize = (8, 8), facecolor = None) 
-    plt.imshow(wordcloud) 
-    plt.axis("off") 
-    plt.tight_layout(pad = 0) 
+    table = "parks"
+    column = "amenities"
+
+    # Read the data into a DataFrame
+    query = f'SELECT {column} FROM {table}'
+    df = pd.read_sql_query(query, conn)
+
+    # Select the column of interest
+    text = df[column].to_string(index=False)
+
+    # Create a word cloud object
+    wordcloud = WordCloud(width=800, height=800, background_color='white', colormap='inferno', stopwords=None).generate(text)
+
+    # Plot the word cloud
+    plt.figure(figsize=(8,8))
+    plt.imshow(wordcloud)
+    plt.axis('off')
     plt.show()
-    
+
     # Close the database connection
     conn.close()
 
@@ -224,18 +230,18 @@ def main():
     data = curr.fetchall()
     length = data[0][0]
 
-    #if length < 25: 
-        #update_table(curr, conn, 0)
-    #elif 25 <= length < 50: 
-        #update_table(curr, conn, 25)
-    #elif 50 <= length < 75: 
-        #update_table(curr, conn, 50)
-    #elif 75 <= length < 100: 
-        #update_table(curr, conn, 75)
-    #elif 100 <= length < 125: 
-        #update_table(curr, conn, 100)
-    #elif 125 <= length <150: 
-        #update_table(curr, conn, 125)
+    if length < 25: 
+        update_table(curr, conn, 0)
+    elif 25 <= length < 50: 
+        update_table(curr, conn, 25)
+    elif 50 <= length < 75: 
+        update_table(curr, conn, 50)
+    elif 75 <= length < 100: 
+        update_table(curr, conn, 75)
+    elif 100 <= length < 125: 
+        update_table(curr, conn, 100)
+    elif 125 <= length <150: 
+        update_table(curr, conn, 125)
 #call the libary table and make sure it only adds 25 in at a time 
     library_table(curr, conn)
     curr.execute("SELECT COUNT(library_id) FROM library")
